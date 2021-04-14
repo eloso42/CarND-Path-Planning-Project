@@ -20,11 +20,17 @@ using std::setw;
 using std::vector;
 
 namespace {
-constexpr double maxVel = 22.3; //roughly 50mph
-constexpr double maxAcc = 9.5; //some buffer to 10.0
-constexpr size_t pathLength = 50;
-constexpr int numLanes = 3;
+constexpr double maxVel = 22.3; //a little bit less than 50mph
+constexpr double maxAcc = 9.5; //some buffer to max allowed 10.0
+constexpr size_t pathLength = 50; //number of path points to generate
+constexpr int numLanes = 3; //(max) number of lanes
 
+/**
+ * Calculates the next velocity (i.e. distance for the next path point)
+ * \param refVel reference (current) velocity
+ * \param dstVel destination velocity
+ * \return next velocity
+ */
 double nextVel(double refVel, double dstVel) {
   double acc = dstVel - refVel;
   if (abs(acc)>maxAcc) {
@@ -33,6 +39,12 @@ double nextVel(double refVel, double dstVel) {
   return refVel + acc * 0.02;
 }
 
+/**
+ * converts a d coordinate to lane number
+ *
+ * \param d
+ * \return lane number
+ */
 int d2lane(double d) {
   return min(max(static_cast<int>(floor(d / 4)), 0), numLanes-1);
 }
@@ -63,6 +75,7 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
   vector<double> ptsx;
   vector<double> ptsy;
 
+  //set reference values and push first spline points to ptsx/y (more or less copied from Q&A video)
   size_t path_size = previous.px.size();
   double ref_x = car.x;
   double ref_y = car.y;
@@ -93,7 +106,8 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
   }
   //cout << "ps=" << path_size << ", yaw = " << car.yaw << ", refVel = " << ref_vel << endl;
 
-  array<double,numLanes> maxVels;
+  // evaluate sensor data
+  array<double, numLanes> maxVels;
   std::fill(maxVels.begin(), maxVels.end(), maxVel);
   array<bool, numLanes> isFree;
   std::fill(isFree.begin(), isFree.end(), true);
@@ -126,8 +140,11 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
     }
   }
   int maxSpeedLane = std::max_element(maxVels.begin(), maxVels.end()) - maxVels.begin();
+
+  // behavioral planner state machine
   switch(currentState) {
     case S_KEEP_LANE: {
+      //check if it makes sense to switch lanes
       int nextLane = maxSpeedLane;
       if (abs(nextLane - ref_lane) > 1) {
         nextLane = (nextLane + ref_lane) / 2;
@@ -139,11 +156,14 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
       break;
     }
     case S_SWITCH_LANE:
+      //wait until lane is switched and switch back to KEEP_LANE then
       if (ref_lane == dst_lane) {
         currentState = S_KEEP_LANE;
       }
       break;
   }
+
+  // determine destination velocity
   if (minDist < 30) {
     if (minDist < 25) {
       dst_vel = maxVels[dst_lane]-2;
@@ -154,13 +174,16 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
     dst_vel = maxVel;
   }
 
+  /*
   cout << "min dist = " << std::setprecision(4) << setw(7) << minDist
        << ", max vels = " << setw(5) <<  maxVels[0] << "(" << isFree[0]
        << "), " << setw(5) << maxVels[1] << "(" << isFree[1]
        << "), " << setw(5) << maxVels[2] << "(" << isFree[2]
        << "), maxSpeed = " << maxSpeedLane << ", current = " << dst_lane << ", ref = " << ref_lane << ", dstVel = " << dst_vel
        << ", cars = " << car.s << ", mins = " << minCars << ", l = " << minCarLane << endl;
+       */
 
+  //generate control points for spline (again more or less copied from Q&A video)
   auto wp0 = getXY(ref_s + 30, 2+4*dst_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
   auto wp1 = getXY(ref_s + 60, 2+4*dst_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
   auto wp2 = getXY(ref_s + 90, 2+4*dst_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
