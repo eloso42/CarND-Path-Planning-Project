@@ -50,10 +50,11 @@ PathPlanner::PathPlanner(
     map_waypoints_s(move(map_waypoints_s)),
     map_waypoints_dx(move(map_waypoints_dx)),
     map_waypoints_dy(move(map_waypoints_dy)),
+    currentState(S_KEEP_LANE),
+    ref_vel(0),
     dst_vel(maxVel),
     dst_lane(1) {
 
-  ref_vel = 0;
 }
 
 PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, double endd, const Car& car, const SensorFusion& sensorFusion) {
@@ -83,6 +84,8 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
     double ref_x_prev = previous.px[path_size-2];
     double ref_y_prev = previous.py[path_size-2];
     ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+    ptsx.push_back(previous.px[0]);
+    ptsy.push_back(previous.py[0]);
     ptsx.push_back(previous.px[path_size-2]);
     ptsy.push_back(previous.py[path_size-2]);
     ptsx.push_back(previous.px[path_size-1]);
@@ -95,6 +98,8 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
   array<bool, numLanes> isFree;
   std::fill(isFree.begin(), isFree.end(), true);
   double minDist = 1e9;
+  double minCars = 1e9;
+  int minCarLane = 3;
   for (auto& item : sensorFusion) {
     int lane = d2lane(item[6]);
     double vx = item[3];
@@ -105,8 +110,12 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
       if (maxVels[lane] > v) {
         maxVels[lane] = v;
       }
+      if (s < minCars) {
+        minCars = s;
+        minCarLane = lane;
+      }
     }
-    if (isFree[lane] && s + 4 > car.s && s < car.s+10) {
+    if (isFree[lane] && ((s + 4) > car.s) && (s < (car.s+20))) {
       isFree[lane] = false;
     }
     if (lane == dst_lane) {
@@ -117,11 +126,23 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
     }
   }
   int maxSpeedLane = std::max_element(maxVels.begin(), maxVels.end()) - maxVels.begin();
-  if (dst_lane != maxSpeedLane && isFree[maxSpeedLane] && maxVels[maxSpeedLane] > maxVels[dst_lane] + 0.5) {
-    dst_lane = maxSpeedLane;
-  }
-  if (abs(dst_lane - ref_lane) > 1) {
-    dst_lane = (dst_lane + ref_lane) / 2;
+  switch(currentState) {
+    case S_KEEP_LANE: {
+      int nextLane = maxSpeedLane;
+      if (abs(nextLane - ref_lane) > 1) {
+        nextLane = (nextLane + ref_lane) / 2;
+      }
+      if (dst_lane != nextLane && isFree[nextLane] && isFree[maxSpeedLane] && maxVels[maxSpeedLane] > maxVels[dst_lane] + 0.5 && minDist < 60) {
+        dst_lane = nextLane;
+        currentState = S_SWITCH_LANE;
+      }
+      break;
+    }
+    case S_SWITCH_LANE:
+      if (ref_lane == dst_lane) {
+        currentState = S_KEEP_LANE;
+      }
+      break;
   }
   if (minDist < 30) {
     if (minDist < 25) {
@@ -135,9 +156,10 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
 
   cout << "min dist = " << std::setprecision(4) << setw(7) << minDist
        << ", max vels = " << setw(5) <<  maxVels[0] << "(" << isFree[0]
-       << "), " << setw(5) << maxVels[1] << "(" << isFree[0]
-       << "), " << setw(5) << maxVels[2] << "(" << isFree[0]
-       << "), maxSpeed = " << maxSpeedLane << ", current = " << dst_lane << ", dstVel = " << dst_vel << endl;
+       << "), " << setw(5) << maxVels[1] << "(" << isFree[1]
+       << "), " << setw(5) << maxVels[2] << "(" << isFree[2]
+       << "), maxSpeed = " << maxSpeedLane << ", current = " << dst_lane << ", ref = " << ref_lane << ", dstVel = " << dst_vel
+       << ", cars = " << car.s << ", mins = " << minCars << ", l = " << minCarLane << endl;
 
   auto wp0 = getXY(ref_s + 30, 2+4*dst_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
   auto wp1 = getXY(ref_s + 60, 2+4*dst_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
@@ -159,8 +181,6 @@ PathPlanner::Path PathPlanner::calcNewPath(const Path& previous, double ends, do
 
   tk::spline s;
   s.set_points(ptsx, ptsy);
-
-  double dist_inc = 0.4;
 
   next.px.resize(previous.px.size());
   next.py.resize(previous.py.size());
